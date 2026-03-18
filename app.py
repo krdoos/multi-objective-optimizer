@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-AI Drilling Optimizer - Multi-Objective ROP & MSE
-Streamlit App - Full Version with Cost & Savings
+Multi-Objective Optimizer Tool
 """
 
 import streamlit as st
