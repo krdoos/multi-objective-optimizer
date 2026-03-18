@@ -123,6 +123,14 @@ st.set_page_config(page_title="AI Drilling Optimizer", layout="wide")
 st.title("⛏️ AI Drilling Optimizer - ROP & MSE Multi-Objective Optimization")
 st.markdown("This app optimizes drilling parameters (WOB, RPM) to maximize ROP while minimizing MSE using desirability function.")
 
+# تهيئة session state
+if 'optimization_done' not in st.session_state:
+    st.session_state.optimization_done = False
+if 'results_df' not in st.session_state:
+    st.session_state.results_df = None
+if 'df' not in st.session_state:
+    st.session_state.df = None
+
 # ---------------------- الشريط الجانبي (معاملات الحفارة) ----------------------
 st.sidebar.header("Drilling Parameters")
 bit_diameter_in = st.sidebar.number_input("Bit Diameter (inches)", value=17.5, step=0.1, format="%.2f")
@@ -133,19 +141,24 @@ wob_bin_size = st.sidebar.number_input("WOB bin size (klb) for grouping", value=
 uploaded_file = st.file_uploader("Upload drilling data file (Excel or CSV)", type=['csv', 'xlsx', 'xls'])
 
 if uploaded_file is not None:
-    # قراءة الملف
-    try:
-        if uploaded_file.name.endswith('.xlsx'):
-            df_raw = pd.read_excel(uploaded_file)
-        else:
-            # محاولة قراءة CSV بمحددات مختلفة
-            try:
-                df_raw = pd.read_csv(uploaded_file, encoding='utf-8-sig', sep=None, engine='python')
-            except:
-                df_raw = pd.read_csv(uploaded_file, encoding='latin-1', sep=None, engine='python')
-    except Exception as e:
-        st.error(f"Error reading file: {e}")
-        st.stop()
+    # قراءة الملف (يتم فقط إذا كان ملف جديد أو لم يتم التحميل من قبل)
+    if 'uploaded_file_name' not in st.session_state or st.session_state.uploaded_file_name != uploaded_file.name:
+        try:
+            if uploaded_file.name.endswith('.xlsx'):
+                df_raw = pd.read_excel(uploaded_file)
+            else:
+                try:
+                    df_raw = pd.read_csv(uploaded_file, encoding='utf-8-sig', sep=None, engine='python')
+                except:
+                    df_raw = pd.read_csv(uploaded_file, encoding='latin-1', sep=None, engine='python')
+            st.session_state.df_raw = df_raw
+            st.session_state.uploaded_file_name = uploaded_file.name
+            st.session_state.optimization_done = False  # إعادة تعيين حالة التحسين عند رفع ملف جديد
+        except Exception as e:
+            st.error(f"Error reading file: {e}")
+            st.stop()
+    else:
+        df_raw = st.session_state.df_raw
 
     st.success(f"File loaded: {uploaded_file.name} – {df_raw.shape[0]} rows, {df_raw.shape[1]} columns.")
     st.subheader("Data Preview")
@@ -185,7 +198,6 @@ if uploaded_file is not None:
     with col1:
         min_rop_val = st.number_input(f"Min ROP ({rop_unit})", value=1.0, step=0.1, format="%.2f")
     with col2:
-        # نطاق افتراضي يعتمد على الوحدة
         default_max = 400.0 if rop_unit == 'm/hr' else 1200.0
         max_rop_val = st.number_input(f"Max ROP ({rop_unit})", value=default_max, step=1.0, format="%.2f")
     with col3:
@@ -209,7 +221,6 @@ if uploaded_file is not None:
     # ====================== زر التشغيل ======================
     if st.button("🚀 Run Optimization", type="primary"):
         with st.spinner("Processing data and optimizing..."):
-
             # بناء DataFrame موحد
             df = pd.DataFrame()
             df['Depth'] = pd.to_numeric(df_raw[depth_col], errors='coerce')
@@ -387,69 +398,77 @@ if uploaded_file is not None:
 
                 progress_bar.progress((i+1)/len(groups))
 
-            # ====================== عرض النتائج النهائية ======================
+            # حفظ النتائج في session_state
             if results:
-                results_df = pd.DataFrame(results)
-                st.subheader("✅ Final Optimization Results")
-                st.dataframe(results_df)
-
-                # زر تحميل النتائج
-                csv = results_df.to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Download Results as CSV", csv, "drilling_optimization_results.csv", "text/csv")
-
-                # ====================== حساب التوفير (Savings) اختياري ======================
-                st.subheader("💰 Time & Cost Savings Estimation")
-                st.markdown("Estimate savings for a specific depth interval using the optimal parameters from a selected RPM group.")
-
-                # اختيار مجموعة RPM لحساب التوفير
-                selected_group = st.selectbox("Select RPM group for savings calculation", results_df['RPM_Group'].unique())
-                # الحصول على البيانات الخاصة بهذه المجموعة
-                group_data_for_savings = df[df['RPM_Group'] == selected_group].copy()
-
-                if not group_data_for_savings.empty:
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        start_depth = st.number_input("Start depth", value=float(group_data_for_savings['Depth'].min()))
-                    with col2:
-                        end_depth = st.number_input("End depth", value=float(group_data_for_savings['Depth'].max()))
-
-                    if st.button("Calculate Savings"):
-                        # فلترة البيانات ضمن الفترة
-                        zone_data = group_data_for_savings[(group_data_for_savings['Depth'] >= start_depth) & 
-                                                            (group_data_for_savings['Depth'] <= end_depth)]
-                        if len(zone_data) > 0:
-                            # حساب المسافة المحفورة (مجموع الفروق الإيجابية في العمق)
-                            zone_depths = zone_data['Depth'].sort_values()
-                            depth_diffs = zone_depths.diff().dropna()
-                            # نفرض أن الفرق بين القراءات لا يزيد عن 5 أقدام (يمثل خطوة حفر)
-                            drilled_distance = depth_diffs[(depth_diffs > 0) & (depth_diffs <= 5.0)].sum()
-                            if drilled_distance <= 0:
-                                drilled_distance = zone_depths.max() - zone_depths.min()
-
-                            # متوسط ROP التاريخي في الفترة
-                            avg_historical_rop = zone_data['ROP_fthr'].mean()
-                            # ROP المثلى من النتائج لهذه المجموعة
-                            opt_row = results_df[results_df['RPM_Group'] == selected_group].iloc[0]
-                            opt_rop_fthr = opt_row['ROP_opt_mhr'] * 3.28084  # تحويل m/hr إلى ft/hr
-
-                            historical_time = drilled_distance / avg_historical_rop if avg_historical_rop>0 else 0
-                            optimal_time = drilled_distance / opt_rop_fthr if opt_rop_fthr>0 else 0
-                            time_saved = historical_time - optimal_time
-                            cost_saved = time_saved * rig_rate
-
-                            st.success(f"""
-                            **Zone:** {start_depth:.2f} - {end_depth:.2f}  
-                            **Drilled distance:** {drilled_distance:.2f} ft  
-                            **Historical avg ROP:** {avg_historical_rop:.2f} ft/hr  
-                            **Optimal ROP:** {opt_rop_fthr:.2f} ft/hr  
-                            **Time saved:** {max(0, time_saved):.2f} hrs  
-                            **Cost saved:** ${max(0, cost_saved):,.2f}
-                            """)
-                        else:
-                            st.warning("No data in the specified interval.")
-                else:
-                    st.warning("No data available for the selected group.")
+                st.session_state.results_df = pd.DataFrame(results)
+                st.session_state.df = df
+                st.session_state.optimization_done = True
             else:
                 st.error("No optimization results generated for any group.")
+
+    # ====================== عرض النتائج المحفوظة ======================
+    if st.session_state.optimization_done and st.session_state.results_df is not None:
+        results_df = st.session_state.results_df
+        df = st.session_state.df
+
+        st.subheader("✅ Final Optimization Results")
+        st.dataframe(results_df)
+
+        # زر تحميل النتائج
+        csv = results_df.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Download Results as CSV", csv, "drilling_optimization_results.csv", "text/csv")
+
+        # ====================== حساب التوفير (Savings) اختياري ======================
+        st.subheader("💰 Time & Cost Savings Estimation")
+        st.markdown("Estimate savings for a specific depth interval using the optimal parameters from a selected RPM group.")
+
+        # اختيار مجموعة RPM لحساب التوفير
+        selected_group = st.selectbox("Select RPM group for savings calculation", results_df['RPM_Group'].unique())
+        # الحصول على البيانات الخاصة بهذه المجموعة
+        group_data_for_savings = df[df['RPM_Group'] == selected_group].copy()
+
+        if not group_data_for_savings.empty:
+            col1, col2 = st.columns(2)
+            with col1:
+                start_depth = st.number_input("Start depth", value=float(group_data_for_savings['Depth'].min()))
+            with col2:
+                end_depth = st.number_input("End depth", value=float(group_data_for_savings['Depth'].max()))
+
+            if st.button("Calculate Savings"):
+                # فلترة البيانات ضمن الفترة
+                zone_data = group_data_for_savings[(group_data_for_savings['Depth'] >= start_depth) & 
+                                                    (group_data_for_savings['Depth'] <= end_depth)]
+                if len(zone_data) > 0:
+                    # حساب المسافة المحفورة (مجموع الفروق الإيجابية في العمق)
+                    zone_depths = zone_data['Depth'].sort_values()
+                    depth_diffs = zone_depths.diff().dropna()
+                    # نفرض أن الفرق بين القراءات لا يزيد عن 5 أقدام (يمثل خطوة حفر)
+                    drilled_distance = depth_diffs[(depth_diffs > 0) & (depth_diffs <= 5.0)].sum()
+                    if drilled_distance <= 0:
+                        drilled_distance = zone_depths.max() - zone_depths.min()
+
+                    # متوسط ROP التاريخي في الفترة
+                    avg_historical_rop = zone_data['ROP_fthr'].mean()
+                    # ROP المثلى من النتائج لهذه المجموعة
+                    opt_row = results_df[results_df['RPM_Group'] == selected_group].iloc[0]
+                    opt_rop_fthr = opt_row['ROP_opt_mhr'] * 3.28084  # تحويل m/hr إلى ft/hr
+
+                    historical_time = drilled_distance / avg_historical_rop if avg_historical_rop > 0 else 0
+                    optimal_time = drilled_distance / opt_rop_fthr if opt_rop_fthr > 0 else 0
+                    time_saved = historical_time - optimal_time
+                    cost_saved = time_saved * rig_rate
+
+                    st.success(f"""
+                    **Zone:** {start_depth:.2f} - {end_depth:.2f}  
+                    **Drilled distance:** {drilled_distance:.2f} ft  
+                    **Historical avg ROP:** {avg_historical_rop:.2f} ft/hr  
+                    **Optimal ROP:** {opt_rop_fthr:.2f} ft/hr  
+                    **Time saved:** {max(0, time_saved):.2f} hrs  
+                    **Cost saved:** ${max(0, cost_saved):,.2f}
+                    """)
+                else:
+                    st.warning("No data in the specified interval.")
+        else:
+            st.warning("No data available for the selected group.")
 else:
     st.info("Please upload a data file to begin.")
