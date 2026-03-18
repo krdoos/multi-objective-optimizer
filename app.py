@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Multi-Objective Optimizer Tool
+Multi-Objective Drilling Optimizer Tool
 """
 
 import streamlit as st
@@ -118,8 +118,8 @@ def find_founder_point(wob_klb, rop_fthr, degree=2):
 # ====================== Streamlit App ==============================
 # ====================================================================
 
-st.set_page_config(page_title="AI Drilling Optimizer", layout="wide")
-st.title("⛏️ AI Drilling Optimizer - ROP & MSE Multi-Objective Optimization")
+st.set_page_config(page_title="MODO Tool", layout="wide")
+st.title("Multi-Objective Drilling Optimizer Tool")
 st.markdown("This app optimizes drilling parameters (WOB, RPM) to maximize ROP while minimizing MSE using desirability function.")
 
 # تهيئة session state
