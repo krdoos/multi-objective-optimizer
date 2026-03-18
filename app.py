@@ -203,6 +203,9 @@ if uploaded_file is not None:
     with col3:
         min_wob_lbs = st.number_input("Min WOB (lbs)", value=2000, step=100, format="%d")
 
+    # تحديد وحدة الإخراج (نفس وحدة الإدخال)
+    output_unit = rop_unit
+
     # ====================== تحليل RPM ======================
     st.subheader("🔄 Multi-RPM Analysis")
     rpm_option = st.radio("Group data by RPM?", ('Yes', 'No'), horizontal=True, index=0)
@@ -255,7 +258,7 @@ if uploaded_file is not None:
                 st.error("Insufficient data after filtering. Adjust filter parameters.")
                 st.stop()
 
-            # توحيد ROP إلى ft/hr
+            # توحيد ROP إلى ft/hr للحسابات الداخلية (لأن معادلة MSE تتطلب ft/hr)
             if rop_unit == 'm/hr':
                 df['ROP_fthr'] = df['ROP_mhr'] * 3.28084
             else:
@@ -355,25 +358,40 @@ if uploaded_file is not None:
 
                 # حساب متوسط العمق في المجموعة
                 avg_depth = group_data['Depth'].mean()
-                # التكلفة لكل قدم عند النقطة المثلى والنقطة المؤسسة
-                cost_founder = rig_rate / founder_rop_fthr if founder_rop_fthr > 0 else np.nan
-                cost_opt = rig_rate / rop_opt_fthr if rop_opt_fthr > 0 else np.nan
+
+                # تحويل ROP للوحدة المختارة للمخرجات
+                if output_unit == 'm/hr':
+                    founder_rop_output = founder_rop_mhr
+                    opt_rop_output = rop_opt_mhr
+                else:
+                    founder_rop_output = founder_rop_fthr
+                    opt_rop_output = rop_opt_fthr
+
+                # حساب التكلفة لكل وحدة مسافة حسب الوحدة المختارة
+                if output_unit == 'm/hr':
+                    # cost per meter = rig_rate / (ROP in m/hr)
+                    cost_founder = rig_rate / founder_rop_output if founder_rop_output > 0 else np.nan
+                    cost_opt = rig_rate / opt_rop_output if opt_rop_output > 0 else np.nan
+                else:
+                    # cost per foot = rig_rate / (ROP in ft/hr)
+                    cost_founder = rig_rate / founder_rop_output if founder_rop_output > 0 else np.nan
+                    cost_opt = rig_rate / opt_rop_output if opt_rop_output > 0 else np.nan
 
                 # حفظ النتائج
                 results.append({
                     'RPM_Group': group_name,
                     'Avg_Depth': avg_depth,
                     'WOB_founder_klb': founder_wob_klb,
-                    'ROP_founder_mhr': founder_rop_mhr,
-                    'Cost_founder_USD_per_ft': cost_founder,
+                    f'ROP_founder_{output_unit}': founder_rop_output,
+                    f'Cost_founder_USD_per_{output_unit.split("/")[0]}': cost_founder,
                     'WOB_opt_klb': wob_opt_klb,
-                    'ROP_opt_mhr': rop_opt_mhr,
-                    'Cost_opt_USD_per_ft': cost_opt,
+                    f'ROP_opt_{output_unit}': opt_rop_output,
+                    f'Cost_opt_USD_per_{output_unit.split("/")[0]}': cost_opt,
                     'MSE_opt_psi': mse_opt_psi,
                     'Desirability': desirability_opt
                 })
 
-                # رسم بياني لكل مجموعة
+                # رسم بياني لكل مجموعة (يبقى بوحدة ft/hr لأن المحاور لا تتأثر باختيار المستخدم)
                 fig, ax1 = plt.subplots(figsize=(10, 5))
                 ax1.set_xlabel('WOB (klb)')
                 ax1.set_ylabel('ROP (ft/hr)', color='blue')
@@ -447,24 +465,41 @@ if uploaded_file is not None:
                     if drilled_distance <= 0:
                         drilled_distance = zone_depths.max() - zone_depths.min()
 
-                    # متوسط ROP التاريخي في الفترة
-                    avg_historical_rop = zone_data['ROP_fthr'].mean()
-                    # ROP المثلى من النتائج لهذه المجموعة
-                    opt_row = results_df[results_df['RPM_Group'] == selected_group].iloc[0]
-                    opt_rop_fthr = opt_row['ROP_opt_mhr'] * 3.28084  # تحويل m/hr إلى ft/hr
+                    # متوسط ROP التاريخي في الفترة (بالوحدة المختارة)
+                    if output_unit == 'm/hr':
+                        avg_historical_rop = zone_data['ROP_fthr'].mean() / 3.28084
+                        historical_rop_label = "m/hr"
+                    else:
+                        avg_historical_rop = zone_data['ROP_fthr'].mean()
+                        historical_rop_label = "ft/hr"
 
-                    historical_time = drilled_distance / avg_historical_rop if avg_historical_rop > 0 else 0
-                    optimal_time = drilled_distance / opt_rop_fthr if opt_rop_fthr > 0 else 0
+                    # ROP المثلى من النتائج لهذه المجموعة (بالوحدة المختارة)
+                    opt_row = results_df[results_df['RPM_Group'] == selected_group].iloc[0]
+                    opt_rop_output = opt_row[f'ROP_opt_{output_unit}']
+
+                    # حساب الوقت والتكلفة بناءً على الوحدة
+                    if output_unit == 'm/hr':
+                        # المسافة المحفورة بالمتر
+                        drilled_distance_m = drilled_distance * 0.3048  # تحويل ft إلى m
+                        historical_time = drilled_distance_m / avg_historical_rop if avg_historical_rop > 0 else 0
+                        optimal_time = drilled_distance_m / opt_rop_output if opt_rop_output > 0 else 0
+                        cost_unit = "meter"
+                    else:
+                        historical_time = drilled_distance / avg_historical_rop if avg_historical_rop > 0 else 0
+                        optimal_time = drilled_distance / opt_rop_output if opt_rop_output > 0 else 0
+                        cost_unit = "ft"
+
                     time_saved = historical_time - optimal_time
                     cost_saved = time_saved * rig_rate
 
                     st.success(f"""
                     **Zone:** {start_depth:.2f} - {end_depth:.2f}  
-                    **Drilled distance:** {drilled_distance:.2f} ft  
-                    **Historical avg ROP:** {avg_historical_rop:.2f} ft/hr  
-                    **Optimal ROP:** {opt_rop_fthr:.2f} ft/hr  
+                    **Drilled distance:** {drilled_distance:.2f} ft ({drilled_distance*0.3048:.2f} m)  
+                    **Historical avg ROP:** {avg_historical_rop:.2f} {historical_rop_label}  
+                    **Optimal ROP:** {opt_rop_output:.2f} {output_unit}  
                     **Time saved:** {max(0, time_saved):.2f} hrs  
-                    **Cost saved:** ${max(0, cost_saved):,.2f}
+                    **Cost saved:** ${max(0, cost_saved):,.2f}  
+                    *(based on {cost_unit} of drilling)*
                     """)
                 else:
                     st.warning("No data in the specified interval.")
