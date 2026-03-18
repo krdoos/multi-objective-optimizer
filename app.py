@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 AI Drilling Optimizer - Multi-Objective ROP & MSE
-Streamlit Web App Version
+Streamlit App - Full Version with Cost & Savings
 """
 
 import streamlit as st
@@ -33,42 +33,51 @@ def find_best_match(columns, patterns):
 def convert_wob_to_lbs(series, col_name):
     col_lower = clean_column_name(col_name)
     if 'tonnes' in col_lower or 'ton' in col_lower:
+        st.info("ℹ️ Converting WOB from tonnes to lbs (multiply by 2204.62)")
         return series * 2204.62
     elif 'kg' in col_lower:
+        st.info("ℹ️ Converting WOB from kg to lbs (multiply by 2.20462)")
         return series * 2.20462
     elif 'klbs' in col_lower or 'k-lbs' in col_lower:
+        st.info("ℹ️ WOB is in klbs, converting to lbs (multiply by 1000)")
         return series * 1000
     elif 'lbs' in col_lower:
         return series
     else:
-        return series * 2204.62  # افتراض tonnes
+        st.warning("⚠️ WOB unit unknown. Assuming tonnes.")
+        return series * 2204.62
 
 def convert_torque_to_ftlbs(series, col_name):
     col_lower = clean_column_name(col_name)
     if 'kft-lb' in col_lower or 'kftlb' in col_lower or 'trq_avg' in col_lower:
+        st.info("ℹ️ Torque in kft-lb, converting to ft-lb (multiply by 1000)")
         return series * 1000
     elif 'ft-lb' in col_lower or 'ftlb' in col_lower:
         return series
     elif 'psi' in col_lower:
-        st.warning("⚠️ Torque column appears to be in PSI. Results will be incorrect!")
+        st.error("⚠️ Torque column appears to be in PSI. Results will be WRONG!")
         return series * 10  # تقدير تقريبي فقط
     else:
-        return series * 1000  # افتراض kft-lb
+        st.warning("⚠️ Torque unit unknown. Assuming kft-lb.")
+        return series * 1000
 
 def convert_rop(series, col_name, target_unit):
     col_lower = clean_column_name(col_name)
     if 'm/hr' in col_lower or 'm/h' in col_lower:
         if target_unit == 'ft/hr':
+            st.info("ℹ️ Converting ROP from m/hr to ft/hr")
             return series * 3.28084
         else:
             return series
     elif 'ft/hr' in col_lower or 'ft/h' in col_lower:
         if target_unit == 'm/hr':
+            st.info("ℹ️ Converting ROP from ft/hr to m/hr")
             return series / 3.28084
         else:
             return series
     else:
-        return series  # افتراض الوحدة المطلوبة
+        st.warning(f"⚠️ ROP unit unknown. Assuming {target_unit}.")
+        return series
 
 def calculate_mse(wob_lbs, rpm, torque_ftlbs, rop_fthr, bit_area_sqin):
     rop_fthr = np.where(rop_fthr <= 0, 0.1, rop_fthr)
@@ -129,7 +138,11 @@ if uploaded_file is not None:
         if uploaded_file.name.endswith('.xlsx'):
             df_raw = pd.read_excel(uploaded_file)
         else:
-            df_raw = pd.read_csv(uploaded_file, encoding='utf-8-sig', engine='python')
+            # محاولة قراءة CSV بمحددات مختلفة
+            try:
+                df_raw = pd.read_csv(uploaded_file, encoding='utf-8-sig', sep=None, engine='python')
+            except:
+                df_raw = pd.read_csv(uploaded_file, encoding='latin-1', sep=None, engine='python')
     except Exception as e:
         st.error(f"Error reading file: {e}")
         st.stop()
@@ -142,7 +155,6 @@ if uploaded_file is not None:
     st.subheader("🔍 Column Mapping")
     st.markdown("The app will try to automatically detect the required columns. Please verify below.")
 
-    # قوائم الكلمات المفتاحية
     depth_patterns = ['depth', 'dept', 'depth(ft)', 'depth(m)', 'measured depth', 'md']
     rop_patterns   = ['rop', 'rop(m/hr)', 'rop (m/hr)', 'rop_mhr', 'rop(1 m)', 'rop(1 ft)']
     wob_patterns   = ['wob', 'weight on bit', 'wob (tonnes)', 'wob (k-lbs)', 'wob (klbs)']
@@ -171,9 +183,11 @@ if uploaded_file is not None:
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        min_rop_val = st.number_input("Min ROP", value=1.0, step=0.1, format="%.2f")
+        min_rop_val = st.number_input(f"Min ROP ({rop_unit})", value=1.0, step=0.1, format="%.2f")
     with col2:
-        max_rop_val = st.number_input("Max ROP", value=400.0 if rop_unit=='m/hr' else 1200.0, step=1.0, format="%.2f")
+        # نطاق افتراضي يعتمد على الوحدة
+        default_max = 400.0 if rop_unit == 'm/hr' else 1200.0
+        max_rop_val = st.number_input(f"Max ROP ({rop_unit})", value=default_max, step=1.0, format="%.2f")
     with col3:
         min_wob_lbs = st.number_input("Min WOB (lbs)", value=2000, step=100, format="%d")
 
@@ -181,10 +195,11 @@ if uploaded_file is not None:
     st.subheader("🔄 Multi-RPM Analysis")
     rpm_option = st.radio("Group data by RPM?", ('Yes', 'No'), horizontal=True, index=0)
 
+    rpm_groups = None
     if rpm_option == 'Yes':
         method = st.radio("Grouping method", ('Fixed values', 'Number of bins'), horizontal=True)
         if method == 'Fixed values':
-            rpm_vals = st.text_input("Enter RPM values separated by commas (e.g., 110,120,130)", "110,120,130,140,150")
+            rpm_vals = st.text_input("Enter RPM values separated by commas (e.g., 110,120,130,140,150)", "110,120,130,140,150")
             rpm_breaks = [float(x.strip()) for x in rpm_vals.split(',') if x.strip()]
             if not rpm_breaks:
                 rpm_breaks = [110,120,130,140,150]
@@ -310,7 +325,7 @@ if uploaded_file is not None:
                 founder_rop_fthr = poly_rop(founder_wob_klb)
                 founder_rop_mhr = founder_rop_fthr / 3.28084
 
-                # تحسين الرغبة
+                # توليد المنحنيات للتحسين
                 wob_fine = np.linspace(agg['WOB_klb'].min(), agg['WOB_klb'].max(), 200)
                 rop_fine = poly_rop(wob_fine)
                 mse_fine = poly_mse(wob_fine)
@@ -327,18 +342,27 @@ if uploaded_file is not None:
                 mse_opt_psi = mse_fine[idx_opt]
                 desirability_opt = des_fine[idx_opt]
 
+                # حساب متوسط العمق في المجموعة
+                avg_depth = group_data['Depth'].mean()
+                # التكلفة لكل قدم عند النقطة المثلى والنقطة المؤسسة
+                cost_founder = rig_rate / founder_rop_fthr if founder_rop_fthr > 0 else np.nan
+                cost_opt = rig_rate / rop_opt_fthr if rop_opt_fthr > 0 else np.nan
+
                 # حفظ النتائج
                 results.append({
                     'RPM_Group': group_name,
+                    'Avg_Depth': avg_depth,
                     'WOB_founder_klb': founder_wob_klb,
                     'ROP_founder_mhr': founder_rop_mhr,
+                    'Cost_founder_USD_per_ft': cost_founder,
                     'WOB_opt_klb': wob_opt_klb,
                     'ROP_opt_mhr': rop_opt_mhr,
+                    'Cost_opt_USD_per_ft': cost_opt,
                     'MSE_opt_psi': mse_opt_psi,
                     'Desirability': desirability_opt
                 })
 
-                # رسم بياني لكل مجموعة (نعرضه في التطبيق)
+                # رسم بياني لكل مجموعة
                 fig, ax1 = plt.subplots(figsize=(10, 5))
                 ax1.set_xlabel('WOB (klb)')
                 ax1.set_ylabel('ROP (ft/hr)', color='blue')
@@ -368,9 +392,63 @@ if uploaded_file is not None:
                 results_df = pd.DataFrame(results)
                 st.subheader("✅ Final Optimization Results")
                 st.dataframe(results_df)
-                # زر تحميل
+
+                # زر تحميل النتائج
                 csv = results_df.to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Download Results as CSV", csv, "drilling_optimization_results.csv", "text/csv")
+
+                # ====================== حساب التوفير (Savings) اختياري ======================
+                st.subheader("💰 Time & Cost Savings Estimation")
+                st.markdown("Estimate savings for a specific depth interval using the optimal parameters from a selected RPM group.")
+
+                # اختيار مجموعة RPM لحساب التوفير
+                selected_group = st.selectbox("Select RPM group for savings calculation", results_df['RPM_Group'].unique())
+                # الحصول على البيانات الخاصة بهذه المجموعة
+                group_data_for_savings = df[df['RPM_Group'] == selected_group].copy()
+
+                if not group_data_for_savings.empty:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        start_depth = st.number_input("Start depth", value=float(group_data_for_savings['Depth'].min()))
+                    with col2:
+                        end_depth = st.number_input("End depth", value=float(group_data_for_savings['Depth'].max()))
+
+                    if st.button("Calculate Savings"):
+                        # فلترة البيانات ضمن الفترة
+                        zone_data = group_data_for_savings[(group_data_for_savings['Depth'] >= start_depth) & 
+                                                            (group_data_for_savings['Depth'] <= end_depth)]
+                        if len(zone_data) > 0:
+                            # حساب المسافة المحفورة (مجموع الفروق الإيجابية في العمق)
+                            zone_depths = zone_data['Depth'].sort_values()
+                            depth_diffs = zone_depths.diff().dropna()
+                            # نفرض أن الفرق بين القراءات لا يزيد عن 5 أقدام (يمثل خطوة حفر)
+                            drilled_distance = depth_diffs[(depth_diffs > 0) & (depth_diffs <= 5.0)].sum()
+                            if drilled_distance <= 0:
+                                drilled_distance = zone_depths.max() - zone_depths.min()
+
+                            # متوسط ROP التاريخي في الفترة
+                            avg_historical_rop = zone_data['ROP_fthr'].mean()
+                            # ROP المثلى من النتائج لهذه المجموعة
+                            opt_row = results_df[results_df['RPM_Group'] == selected_group].iloc[0]
+                            opt_rop_fthr = opt_row['ROP_opt_mhr'] * 3.28084  # تحويل m/hr إلى ft/hr
+
+                            historical_time = drilled_distance / avg_historical_rop if avg_historical_rop>0 else 0
+                            optimal_time = drilled_distance / opt_rop_fthr if opt_rop_fthr>0 else 0
+                            time_saved = historical_time - optimal_time
+                            cost_saved = time_saved * rig_rate
+
+                            st.success(f"""
+                            **Zone:** {start_depth:.2f} - {end_depth:.2f}  
+                            **Drilled distance:** {drilled_distance:.2f} ft  
+                            **Historical avg ROP:** {avg_historical_rop:.2f} ft/hr  
+                            **Optimal ROP:** {opt_rop_fthr:.2f} ft/hr  
+                            **Time saved:** {max(0, time_saved):.2f} hrs  
+                            **Cost saved:** ${max(0, cost_saved):,.2f}
+                            """)
+                        else:
+                            st.warning("No data in the specified interval.")
+                else:
+                    st.warning("No data available for the selected group.")
             else:
                 st.error("No optimization results generated for any group.")
 else:
