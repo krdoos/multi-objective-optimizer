@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 Multi-Objective Drilling Optimizer Tool (MODO)
-Based on: Mantegazini et al. (2024) - Applied Sciences
+Based on: Applied Sciences
 "Analysis and Multi-Objective Optimization of the Rate of Penetration 
-and Mechanical Specific Energy: A Case Study Applied to a Carbonate 
-Hard Rock Reservoir Based on a Drill Rate Test Using Play-Back Methodology"
+and Mechanical Specific Energy"
 
 Methodology:
 1. Calculate MSE using Teale (1965) equation
