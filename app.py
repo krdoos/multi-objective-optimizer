@@ -349,8 +349,8 @@ st.markdown("""
 
 st.markdown('<p class="main-title">⛏️ MODO – Multi-Objective Drilling Optimizer</p>', unsafe_allow_html=True)
 st.markdown(
-    '<p class="sub-title">Based on Mantegazini et al. (2024) · Drill Rate Test Play-Back · '
-    'Desirability Function Optimization (Derringer & Suich 1980)</p>',
+    '<p class="sub-title">Based on  Drill Rate Test Play-Back · '
+    'Desirability Function Optimization </p>',
     unsafe_allow_html=True
 )
 
