@@ -140,6 +140,23 @@ ROCK_DB = {
 
 MPA_TO_PSI = 145.038   # 1 MPa = 145.038 psi
 
+# ============================================================
+#  Pessier & Fear (1992) bit-specific coefficient of sliding
+#  friction (mu). Used to ESTIMATE torque-on-bit from WOB when
+#  reliable (downhole) torque is unavailable, so that MSE does
+#  not depend on friction-inflated surface torque.
+#  TOB (ft-lb) = mu * D_bit(in) * WOB(lbs) / 36
+#  Typical mu: ~0.25-0.30 roller-cone, ~0.80-0.85 PDC.
+# ============================================================
+BIT_MU = {
+    "PDC (>7 blades)":            0.80,
+    "PDC (5-7 blades)":           0.85,
+    "PDC (3-4 blades)":           0.75,
+    "Roller cone (TCI insert)":   0.30,
+    "Roller cone (steel tooth)":  0.25,
+    "Custom / Unknown":           0.50,
+}
+
 
 # ============================================================
 #  Utility functions
@@ -301,6 +318,13 @@ def surface_torque_psi_to_ftlb(spt_psi, bit_diameter_in):
     return spt_psi * bit_area * radius_ft / (2.0 * np.pi)
 
 
+def tob_from_wob_pessier(wob_lbs, bit_diameter_in, mu):
+    """Estimate torque-on-bit (ft-lb) from WOB via Pessier & Fear (1992).
+       TOB = mu * D_bit(in) * WOB(lbs) / 36.  Independent of surface torque,
+       so it removes drill-string friction inflation from the MSE estimate."""
+    return mu * bit_diameter_in * np.asarray(wob_lbs, dtype=float) / 36.0
+
+
 # ============================================================
 #  Geological layer auto-detection using depth intervals
 #  and abrupt changes in MSE / ROP (formation change proxy)
@@ -349,8 +373,8 @@ st.markdown("""
 
 st.markdown('<p class="main-title">⛏️ MODO – Multi-Objective Drilling Optimizer</p>', unsafe_allow_html=True)
 st.markdown(
-    '<p class="sub-title">Based on  Drill Rate Test Play-Back · '
-    'Desirability Function Optimization </p>',
+    '<p class="sub-title">Based on Mantegazini et al. (2024) · Drill Rate Test Play-Back · '
+    'Desirability Function Optimization (Derringer & Suich 1980)</p>',
     unsafe_allow_html=True
 )
 
@@ -529,15 +553,35 @@ rop_unit = st.radio("ROP unit in file:", ['ft/hr', 'm/hr'], horizontal=True, ind
                      help="App converts to ft/hr internally for Teale MSE formula.")
 wob_unit = st.radio("WOB unit in file:", ['k-lbs', 'tonnes', 'lbs'], horizontal=True,
                      help="App converts to klb internally.")
-torque_source = st.radio(
-    "Torque column type:",
-    ['kft-lb (direct torque)', 'Surface Torque PSI (Pason-style)'],
-    horizontal=True,
+torque_model = st.radio(
+    "Torque model (how torque-on-bit is obtained):",
+    [
+        'A - Measured torque (direct, kft-lb)',
+        'C - Pessier mu (estimate TOB from WOB)',
+        'D - Surface torque PSI (relative only)',
+    ],
+    index=0,
     help=(
-        "Pason logs report 'Surface Torque (psi)' which is a hydraulic pressure. "
-        "Select 'Surface Torque PSI' and the app converts it to ft-lb using bit area and radius."
+        "Surface torque is inflated by drill-string friction, so absolute MSE from it is "
+        "unreliable (especially in deviated wells). Choose the fidelity that matches your data:\n"
+        "A: use a trusted measured torque channel directly (downhole, or shallow-well surface torque in mechanical units); absolute MSE valid.\n"
+        "C: estimate torque-on-bit from WOB via Pessier & Fear (1992) - recommended when no "
+        "reliable downhole torque exists; ignores the friction-inflated surface torque.\n"
+        "D: use surface torque only - MSE is treated as a RELATIVE efficiency indicator, not "
+        "an absolute value. (Tier B, torque-and-drag correction, requires a survey and is future work.)"
     )
 )
+
+# Bit type + sliding-friction coefficient (used by Pessier tier C)
+if torque_model.startswith('C'):
+    _bt = st.selectbox("Bit type (sets sliding-friction mu, Pessier & Fear 1992):",
+                       list(BIT_MU.keys()), index=0)
+    mu_pessier = st.number_input("Sliding-friction coefficient mu",
+                                 value=float(BIT_MU[_bt]), min_value=0.05,
+                                 max_value=1.50, step=0.05,
+                                 help="Typical: ~0.25-0.30 roller-cone, ~0.80-0.85 PDC.")
+else:
+    mu_pessier = 0.50
 
 # ============================================================
 #  RUN Button
@@ -567,12 +611,22 @@ if run_btn:
         # RPM
         df['RPM'] = to_numeric_safe(raw_df[rpm_col])
 
-        # Torque → ft-lb
+        # Torque → ft-lb  (per selected torque model / fidelity tier)
         torq_raw = to_numeric_safe(raw_df[torque_col])
-        if 'PSI' in torque_source:
+        if torque_model.startswith('C'):
+            # Pessier & Fear (1992): estimate TOB from WOB, ignore surface torque
+            df['TOB_ftlb'] = tob_from_wob_pessier(df['WOB_klb'] * 1000.0, bit_diam, mu_pessier)
+            mse_is_relative = False
+        elif torque_model.startswith('D'):
+            # Surface torque (psi) proxy -> RELATIVE efficiency only
             df['TOB_ftlb'] = surface_torque_psi_to_ftlb(torq_raw, bit_diam)
+            mse_is_relative = True
         else:
-            df['TOB_ftlb'] = torq_raw * 1000.0   # kft-lb → ft-lb
+            # A: measured downhole torque, direct (kft-lb -> ft-lb)
+            df['TOB_ftlb'] = torq_raw * 1000.0
+            mse_is_relative = False
+        st.session_state['mse_is_relative'] = mse_is_relative
+        st.session_state['torque_model'] = torque_model
 
         # Layer column
         if segment_mode == "Manual column in file" and layer_col != 'None':
@@ -612,6 +666,13 @@ if run_btn:
         )
         df['MSE_psi'] = np.maximum(df['MSE_psi'], 0)
         df['MSE_kpsi'] = df['MSE_psi'] / 1000.0
+        if st.session_state.get('mse_is_relative', False):
+            st.warning(
+                "Torque model D (surface torque) selected: absolute MSE is inflated by "
+                "drill-string friction. MSE values here are RELATIVE efficiency indicators "
+                "for ranking/diagnostics only, not absolute downhole energies. For absolute "
+                "MSE use downhole torque (A) or the Pessier estimate (C)."
+            )
 
         # ------ Layer assignment ------
         if segment_mode == "Auto depth-based segmentation":
